@@ -1,6 +1,6 @@
 #!/usr/bin/env dub
 /+dub.sdl:
-dependency "dmd" version="~>2.105.0-beta.1"
+dependency "dmd" version="~>2.110.0-beta.1"
 +/
 
 import dmd.astcodegen;
@@ -13,6 +13,19 @@ import dmd.visitor;
 
 import core.stdc.stdio;
 import std.stdio;
+import std.range;
+
+auto distinct(Range)(Range r) if (isInputRange!Range)
+{
+    import std.algorithm.iteration : filter;
+    bool[ElementType!Range] justSeen;
+    return r.filter!(
+      (k) {
+         if (k in justSeen) return false;
+         return justSeen[k] = true;
+      }
+   );
+}
 
 struct ImportInfo
 {
@@ -92,10 +105,10 @@ extern(C++) class UnusedImportVisitor : SemanticTimeTransitiveVisitor
 
 extern(D):
 
-    bool[ImportInfo] usedImports;
+    string[][ImportInfo] usedImports;
     string moduleName;
 
-    this(bool[ImportInfo] usedImports, string moduleName)
+    this(string[][ImportInfo] usedImports, string moduleName)
     {
         this.usedImports = usedImports;
         this.moduleName = moduleName;
@@ -109,7 +122,8 @@ extern(D):
 
     void checkUsed(const(char)[] str)
     {
-        import std.algorithm.searching : startsWith;
+        import std.conv : to;
+        import std.algorithm.searching : startsWith, skipOver, findSplit;
 
         // declarations in this module do not
         // use any imports
@@ -118,8 +132,15 @@ extern(D):
 
         foreach(key; usedImports.keys)
         {
-            if (str.startsWith(key.importedModule))
-                usedImports[key] = true;
+            auto imp = key.importedModule ~ ".";
+            if (str.startsWith(imp))
+            {
+                string symbolFQN = to!string(str);
+                skipOver(symbolFQN, imp);
+                auto r = symbolFQN.findSplit(".");
+                usedImports[key] ~= r[0];
+                break;
+            }
         }
     }
 }
@@ -138,16 +159,16 @@ void main()
     initDMD();
     addImportPaths();
 
-    enum mod = "compiler";
+    enum mod = "mtype";
     auto m = parseModule("/home/razvann/Dlang/dmd/compiler/src/dmd/" ~ mod ~ ".d", null);
 
     scope getImportsVisitor = new TopLevelImportsVisitor();
     m[0].accept(getImportsVisitor);
     auto imps = getImportsVisitor.imports;
 
-    bool[ImportInfo] importHash;
+    string[][ImportInfo] importHash;
     foreach(imp; imps)
-        importHash[imp] = false;
+        importHash[imp] = [];
 
     m[0].fullSemantic();
 
@@ -158,6 +179,8 @@ void main()
     foreach(key; usedImports.keys())
     {
         if (!usedImports[key])
-            writefln("Warning(%u): unused import: %s", key.line, key.importedModule);
+            writefln("\nWarning(%u): unused import: %s\n", key.line, key.importedModule);
+        else
+            writefln("Import: %s is used for the following members: %s", key.importedModule, usedImports[key].distinct());
     }
 }
